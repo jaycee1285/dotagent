@@ -1,0 +1,18 @@
+objective: "Prioritize human-visible skill/hook inspection and Git-backed backup confidence across Claude and Codex surfaces."
+state: "Core explorer is usable; edit-mode syntax highlighting and hard-coded external JS/TS skill-script backup capture both shipped and passed human smoke."
+next_steps:
+  - "Hook UX cleanup: cleaner inline script display, prominent script path, distinct JSON vs script sections."
+  - "Yellow-state visibility: missing external script backup detection and Claude/Codex same-name size mismatch indicator."
+  - "Fast operator cleanup actions, especially bulk backup for red/yellow entries in the current view."
+manual_smoke:
+  status: "passed"
+  date: "2026-03-17"
+  command: "nix develop -c cargo run"
+  notes:
+    - "John confirmed edit-mode syntax highlighting worked."
+    - "John confirmed external hard-coded skill-script backup capture worked."
+known_gaps:
+  - "Hook viewer remains a raw-ish dump and still needs a clearer presentation model."
+  - "Yellow state still only reflects content diff / missing backup, not the new mismatch signals planned on the board."
+  - "Restore-from-digtwin remains intentionally deprioritized."
+human_blockers: []
