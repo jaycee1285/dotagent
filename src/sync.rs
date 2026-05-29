@@ -10,8 +10,9 @@ fn digtwin_base() -> Option<PathBuf> {
 /// Compute the backup destination for an entry, using the new structure:
 ///   ~/repos/digtwin/claude/skills/{name}/SKILL.md
 ///   ~/repos/digtwin/claude/hooks/settings-hooks.json
-///   ~/repos/digtwin/codex/skills/{name}/SKILL.md
-///   ~/repos/digtwin/codex/rules/{filename}
+///   ~/repos/digtwin/agentskills/{name}/SKILL.md
+///   ~/repos/digtwin/pi/{name}.ts
+///   ~/repos/digtwin/pi/{name}/index.ts
 pub fn backup_dest(entry: &SkillEntry) -> Option<PathBuf> {
     let base = digtwin_base()?;
     match entry.surface {
@@ -26,15 +27,19 @@ pub fn backup_dest(entry: &SkillEntry) -> Option<PathBuf> {
                 .join("hooks")
                 .join("settings-hooks.json"),
         ),
-        Surface::CodexSkill => Some(
-            base.join("codex")
-                .join("skills")
+        Surface::AgentSkill => Some(
+            base.join("agentskills")
                 .join(&entry.name)
                 .join("SKILL.md"),
         ),
-        Surface::CodexRule => {
-            let filename = entry.path.file_name()?;
-            Some(base.join("codex").join("rules").join(filename))
+        Surface::PiExtension => {
+            let extension_root = pi_extension_root(entry)?;
+            if extension_root.is_dir() {
+                Some(base.join("pi").join(&entry.name).join("index.ts"))
+            } else {
+                let filename = entry.path.file_name()?;
+                Some(base.join("pi").join(filename))
+            }
         }
     }
 }
@@ -62,22 +67,105 @@ pub fn backup_entry(entry: &SkillEntry) -> Result<PathBuf, String> {
         }
     }
 
-    // For skills: copy the entire directory (scripts, templates, agents, etc.)
-    if matches!(entry.surface, Surface::ClaudeSkill | Surface::CodexSkill) {
+    // For skills: copy the entire directory (scripts, templates, agents, etc.),
+    // then replace the source directory with a symlink to the digtwin copy.
+    if matches!(entry.surface, Surface::ClaudeSkill | Surface::AgentSkill) {
         let source_dir = entry
             .path
             .parent()
             .ok_or("Cannot determine skill directory")?;
         let dest_dir = dest.parent().ok_or("Cannot determine backup directory")?;
-        copy_dir_recursive(source_dir, dest_dir)?;
+        sync_dir_to_digtwin(source_dir, dest_dir)?;
         copy_hardcoded_skill_scripts(&entry.path, dest_dir)?;
         return Ok(dest);
     }
 
-    // For rules, copy the single file
+    // For Pi directory extensions: copy the whole extension directory so helper
+    // modules, package manifests, and runtime assets stay together, then symlink.
+    if entry.surface == Surface::PiExtension {
+        let extension_root = pi_extension_root(entry).ok_or("Cannot determine extension root")?;
+        if extension_root.is_dir() {
+            let dest_dir = dest
+                .parent()
+                .ok_or("Cannot determine extension backup directory")?;
+            sync_dir_to_digtwin(&extension_root, dest_dir)?;
+        } else {
+            sync_file_to_digtwin(&entry.path, &dest)?;
+        }
+        return Ok(dest);
+    }
+
+    // Fallback: plain copy
     std::fs::copy(&entry.path, &dest).map_err(|e| format!("Failed to copy: {}", e))?;
 
     Ok(dest)
+}
+
+/// Copy `source_dir` into `dest_dir`, then replace `source_dir` with a
+/// symlink pointing to `dest_dir`. The digtwin copy becomes the source of
+/// truth; the original location is a symlink back.
+///
+/// Idempotent: if `source_dir` is already a symlink to `dest_dir`, skip.
+fn sync_dir_to_digtwin(source_dir: &Path, dest_dir: &Path) -> Result<(), String> {
+    let already_linked = std::fs::symlink_metadata(source_dir)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        && std::fs::read_link(source_dir)
+            .map(|t| t == dest_dir)
+            .unwrap_or(false);
+
+    if already_linked {
+        // Make sure digtwin copy exists; if it does, nothing to do.
+        if dest_dir.exists() {
+            return Ok(());
+        }
+        // Symlink dangles — fall through and rebuild from... nowhere. Bail.
+        return Err(format!(
+            "{} is a symlink to missing {}",
+            source_dir.display(),
+            dest_dir.display()
+        ));
+    }
+
+    copy_dir_recursive(source_dir, dest_dir)?;
+
+    // Replace source with symlink
+    std::fs::remove_dir_all(source_dir)
+        .map_err(|e| format!("Failed to remove source {}: {}", source_dir.display(), e))?;
+    std::os::unix::fs::symlink(dest_dir, source_dir).map_err(|e| {
+        format!(
+            "Failed to symlink {} -> {}: {}",
+            source_dir.display(),
+            dest_dir.display(),
+            e
+        )
+    })?;
+    Ok(())
+}
+
+/// Copy a single file into digtwin, then replace the source with a symlink.
+fn sync_file_to_digtwin(source: &Path, dest: &Path) -> Result<(), String> {
+    let already_linked = std::fs::symlink_metadata(source)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+        && std::fs::read_link(source).map(|t| t == dest).unwrap_or(false);
+
+    if already_linked && dest.exists() {
+        return Ok(());
+    }
+
+    std::fs::copy(source, dest).map_err(|e| format!("Failed to copy: {}", e))?;
+    std::fs::remove_file(source)
+        .map_err(|e| format!("Failed to remove source {}: {}", source.display(), e))?;
+    std::os::unix::fs::symlink(dest, source).map_err(|e| {
+        format!(
+            "Failed to symlink {} -> {}: {}",
+            source.display(),
+            dest.display(),
+            e
+        )
+    })?;
+    Ok(())
 }
 
 /// Backup all entries that match a given group label (e.g. "Personal").
@@ -208,7 +296,7 @@ fn is_skill_path_terminator(ch: char) -> bool {
 /// For hooks: not supported (they live inside settings.json).
 pub fn delete_entry(entry: &SkillEntry) -> Result<(), String> {
     match entry.surface {
-        Surface::ClaudeSkill | Surface::CodexSkill => {
+        Surface::ClaudeSkill | Surface::AgentSkill => {
             // path points to SKILL.md, parent is the skill directory
             let skill_dir = entry
                 .path
@@ -217,10 +305,41 @@ pub fn delete_entry(entry: &SkillEntry) -> Result<(), String> {
             std::fs::remove_dir_all(skill_dir)
                 .map_err(|e| format!("Failed to delete {}: {}", skill_dir.display(), e))
         }
-        Surface::CodexRule => std::fs::remove_file(&entry.path)
-            .map_err(|e| format!("Failed to delete {}: {}", entry.path.display(), e)),
+        Surface::PiExtension => {
+            let extension_root =
+                pi_extension_root(entry).ok_or("Cannot determine extension root")?;
+            if extension_root.is_dir() {
+                std::fs::remove_dir_all(&extension_root).map_err(|e| {
+                    format!("Failed to delete {}: {}", extension_root.display(), e)
+                })
+            } else {
+                std::fs::remove_file(&entry.path)
+                    .map_err(|e| format!("Failed to delete {}: {}", entry.path.display(), e))
+            }
+        }
         Surface::ClaudeHook => {
             Err("Hook deletion not supported — hooks live in settings.json".to_string())
         }
     }
+}
+
+fn pi_extension_root(entry: &SkillEntry) -> Option<PathBuf> {
+    if entry.surface != Surface::PiExtension {
+        return None;
+    }
+
+    let global_extension_dir = dirs::home_dir()?
+        .join(".pi")
+        .join("agent")
+        .join("extensions")
+        .join(&entry.name);
+    if global_extension_dir.is_dir() {
+        return Some(global_extension_dir);
+    }
+
+    if entry.path.file_name().and_then(|n| n.to_str()) == Some("index.ts") {
+        return entry.path.parent().map(|p| p.to_path_buf());
+    }
+
+    Some(entry.path.clone())
 }

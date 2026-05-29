@@ -1,6 +1,7 @@
+pub mod agents;
 pub mod claude;
-pub mod codex;
 pub mod digtwin;
+pub mod pi;
 
 use std::path::PathBuf;
 
@@ -63,9 +64,9 @@ impl SkillMeta {
             }
             return a.to_string();
         }
-        // Codex has no provenance system — skills with no metadata are personal
+        // Agent and Pi have no provenance system — entries with no metadata are personal.
         if let Some(s) = surface {
-            if matches!(s, Surface::CodexSkill | Surface::CodexRule) {
+            if matches!(s, Surface::AgentSkill | Surface::PiExtension) {
                 return "Personal".to_string();
             }
         }
@@ -165,8 +166,8 @@ fn strip_yaml_key(line: &str, key: &str) -> Option<String> {
 pub enum Surface {
     ClaudeSkill,
     ClaudeHook,
-    CodexSkill,
-    CodexRule,
+    AgentSkill,
+    PiExtension,
 }
 
 impl Surface {
@@ -174,8 +175,8 @@ impl Surface {
         match self {
             Surface::ClaudeSkill => "Claude Code Skills",
             Surface::ClaudeHook => "Claude Code Hooks",
-            Surface::CodexSkill => "Codex Skills",
-            Surface::CodexRule => "Codex Rules",
+            Surface::AgentSkill => "Agent Skills",
+            Surface::PiExtension => "Pi Extensions",
         }
     }
 }
@@ -197,8 +198,8 @@ pub fn scan_all() -> Vec<SkillEntry> {
     let mut entries = Vec::new();
     entries.extend(claude::scan_skills());
     entries.extend(claude::scan_hooks());
-    entries.extend(codex::scan_skills());
-    entries.extend(codex::scan_rules());
+    entries.extend(agents::scan_skills());
+    entries.extend(pi::scan_extensions());
 
     // Check sync status against digtwin
     digtwin::check_sync_status(&mut entries);

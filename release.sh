@@ -11,6 +11,7 @@ ARCH="$(uname -m)"
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
 TARBALL="${APP_NAME}-${TAG}-${PLATFORM}-${ARCH}.tar.xz"
 GH_REPO="${GH_REPO:-jaycee1285/dotagent}"
+ASSET_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${TARBALL}"
 
 echo "==> Building ${APP_NAME} ${TAG} (${PLATFORM}/${ARCH})"
 
@@ -27,6 +28,7 @@ STAGING="$(mktemp -d)"
 trap 'chmod -R u+w "$STAGING" && rm -rf "$STAGING"' EXIT
 
 mkdir -p "$STAGING/bin"
+mkdir -p "$STAGING/share"
 
 if [[ -f "$NIX_RESULT/bin/.${APP_NAME}-wrapped" ]]; then
   REAL_BIN="$NIX_RESULT/bin/.${APP_NAME}-wrapped"
@@ -39,6 +41,10 @@ fi
 cp "$REAL_BIN" "$STAGING/bin/${APP_NAME}"
 chmod u+wx "$STAGING/bin/${APP_NAME}"
 
+if [[ -d "$NIX_RESULT/share" ]]; then
+  cp -a "$NIX_RESULT/share/." "$STAGING/share/"
+fi
+
 if command -v strip >/dev/null 2>&1; then
   echo "==> Stripping binary"
   strip --strip-unneeded "$STAGING/bin/${APP_NAME}" || true
@@ -49,7 +55,7 @@ nix shell nixpkgs#patchelf --command patchelf --remove-rpath "$STAGING/bin/${APP
 nix shell nixpkgs#patchelf --command patchelf --set-interpreter /lib64/ld-linux-x86-64.so.2 "$STAGING/bin/${APP_NAME}"
 
 echo "==> Creating ${TARBALL}"
-tar -cJf "$REPO_ROOT/$TARBALL" -C "$STAGING" bin
+tar -cJf "$REPO_ROOT/$TARBALL" -C "$STAGING" bin share
 
 SIZE=$(du -h "$REPO_ROOT/$TARBALL" | awk '{print $1}')
 echo "==> Tarball: ${REPO_ROOT}/${TARBALL} (${SIZE})"
@@ -66,6 +72,19 @@ elif [[ -n "$GH_REPO" ]]; then
       --title "${APP_NAME} ${TAG}" \
       --notes "${APP_NAME} ${TAG}" \
       --latest
+  fi
+fi
+
+echo "==> Release asset: ${ASSET_URL}"
+echo "==> SHA-256 for Nix flake input:"
+if [[ "${SKIP_UPLOAD:-0}" == "1" ]]; then
+  nix hash file --type sha256 "$REPO_ROOT/$TARBALL"
+else
+  PREFETCH_JSON=$(nix store prefetch-file --json --hash-type sha256 "$ASSET_URL")
+  echo "$PREFETCH_JSON" | grep -oP '"hash"\s*:\s*"\K[^"]+'
+  PREFETCH_PATH=$(echo "$PREFETCH_JSON" | grep -oP '"storePath"\s*:\s*"\K[^"]+')
+  if [[ -n "$PREFETCH_PATH" ]]; then
+    nix store delete "$PREFETCH_PATH" 2>/dev/null || true
   fi
 fi
 

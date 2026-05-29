@@ -4,6 +4,8 @@ use crate::theme::GtkTheme;
 use egui_phosphor::regular as icons;
 use std::collections::HashSet;
 
+const SIDEBAR_LABEL_LIMIT: usize = 80;
+
 // ---------------------------------------------------------------------------
 // Navigation model
 // ---------------------------------------------------------------------------
@@ -199,7 +201,7 @@ impl DotagentApp {
         let filtered = self.surface_entries(surface);
         let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         for (idx, entry) in filtered {
-            let group = entry.group_label();
+            let group = sidebar_group_label(entry);
             groups.entry(group).or_default().push(idx);
         }
         let mut result: Vec<_> = groups.into_iter().collect();
@@ -414,14 +416,19 @@ impl DotagentApp {
         let mut order = Vec::new();
 
         // Grouped surfaces
-        for surface in [Surface::ClaudeSkill, Surface::CodexSkill] {
+        for surface in [
+            Surface::ClaudeSkill,
+            Surface::AgentSkill,
+            Surface::PiExtension,
+            Surface::ClaudeHook,
+        ] {
             let groups = self.grouped_surface_entries(surface);
             order.push(NavNode::SurfaceHeader(surface));
 
             let surface_open = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ctx,
                 surface_col_id(surface),
-                surface == Surface::CodexSkill,
+                matches!(surface, Surface::AgentSkill | Surface::PiExtension),
             )
             .is_open();
 
@@ -447,36 +454,6 @@ impl DotagentApp {
                             order.push(NavNode::Entry(idx));
                         }
                     }
-                }
-            }
-        }
-
-        // Flat surfaces
-        for surface in [Surface::ClaudeHook, Surface::CodexRule] {
-            let indices: Vec<usize> = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    e.surface == surface
-                        && (self.filter.is_empty()
-                            || e.name.to_lowercase().contains(&self.filter.to_lowercase()))
-                })
-                .map(|(i, _)| i)
-                .collect();
-
-            order.push(NavNode::SurfaceHeader(surface));
-
-            let surface_open = egui::collapsing_header::CollapsingState::load_with_default_open(
-                ctx,
-                surface_col_id(surface),
-                true,
-            )
-            .is_open();
-
-            if surface_open {
-                for &idx in &indices {
-                    order.push(NavNode::Entry(idx));
                 }
             }
         }
@@ -518,6 +495,33 @@ fn paint_cursor_bar(ui: &mut egui::Ui, resp: &egui::Response, color: egui::Color
         .rect_filled(bar, egui::CornerRadius::ZERO, color);
 }
 
+fn sidebar_group_label(entry: &SkillEntry) -> String {
+    if entry.surface == Surface::ClaudeHook {
+        let label = entry
+            .name
+            .split_once(':')
+            .map(|(prefix, _)| prefix.trim())
+            .unwrap_or(entry.name.as_str());
+        return truncate_sidebar_label(label);
+    }
+
+    truncate_sidebar_label(&entry.group_label())
+}
+
+fn sidebar_entry_label(entry: &SkillEntry) -> String {
+    truncate_sidebar_label(&entry.name)
+}
+
+fn truncate_sidebar_label(label: &str) -> String {
+    let mut chars = label.chars();
+    let truncated: String = chars.by_ref().take(SIDEBAR_LABEL_LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{}...", truncated)
+    } else {
+        truncated
+    }
+}
+
 impl DotagentApp {
     fn render_entry_list(
         ui: &mut egui::Ui,
@@ -556,8 +560,10 @@ impl DotagentApp {
                 ui.painter().circle_filled(rect.center(), 4.0, dot_color);
 
                 // Selectable label — highlight if selected OR if cursor is here
+                let entry_label = sidebar_entry_label(entry);
                 let label_resp =
-                    ui.add(egui::Button::new(&entry.name).selected(is_selected || is_cursor));
+                    ui.add(egui::Button::new(entry_label).selected(is_selected || is_cursor));
+                label_resp.clone().on_hover_text(&entry.name);
                 if label_resp.clicked() {
                     *new_selection = Some(*idx);
                 }
@@ -579,11 +585,17 @@ impl DotagentApp {
 // ---------------------------------------------------------------------------
 
 impl eframe::App for DotagentApp {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        let c = self.theme.view_bg();
+        let n = |v: u8| v as f32 / 255.0;
+        [n(c.r()), n(c.g()), n(c.b()), n(c.a())]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // -- Window title -------------------------------------------------------
         let title = match self.selected_idx.and_then(|i| self.entries.get(i)) {
             Some(entry) => format!("{} — dotagent", entry.name),
-            None => "dotagent — Skills & Hooks Explorer".to_string(),
+            None => "dotagent — Agent Resources Explorer".to_string(),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
 
@@ -1148,9 +1160,12 @@ impl eframe::App for DotagentApp {
                     } else {
                         self.theme.view_fg()
                     };
-                    ui.label(egui::RichText::new(file_label).color(color));
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(file_label).color(color))
+                            .truncate(),
+                    );
                 } else {
-                    ui.label("Skills & Hooks Explorer");
+                    ui.label("Agent Resources Explorer");
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -1267,16 +1282,17 @@ impl eframe::App for DotagentApp {
                 no_stroke
             },
         );
-        let viewer_frame = egui::Frame::central_panel(ctx.style().as_ref()).stroke(
-            if self.focus_pane == FocusPane::Viewer {
+        let viewer_frame = egui::Frame::central_panel(ctx.style().as_ref())
+            .fill(self.theme.view_bg())
+            .stroke(if self.focus_pane == FocusPane::Viewer {
                 focus_stroke
             } else {
                 no_stroke
-            },
-        );
+            });
 
         egui::SidePanel::left("sidebar")
             .default_width(300.0)
+            .resizable(true)
             .frame(sidebar_frame)
             .show(ctx, |ui| {
                 // Click in sidebar → focus sidebar
@@ -1312,7 +1328,12 @@ impl eframe::App for DotagentApp {
                     let mut new_context_target = self.context_target.clone();
 
                     // -- Grouped surfaces ------------------------------------
-                    for surface in [Surface::ClaudeSkill, Surface::CodexSkill] {
+                    for surface in [
+                        Surface::ClaudeSkill,
+                        Surface::AgentSkill,
+                        Surface::PiExtension,
+                        Surface::ClaudeHook,
+                    ] {
                         let groups = self.grouped_surface_entries(surface);
                         let total: usize = groups.iter().map(|(_, v)| v.len()).sum();
                         let header = format!("{} ({})", surface.label(), total);
@@ -1324,7 +1345,7 @@ impl eframe::App for DotagentApp {
                             egui::collapsing_header::CollapsingState::load_with_default_open(
                                 ctx,
                                 surface_col_id(surface),
-                                surface == Surface::CodexSkill,
+                                matches!(surface, Surface::AgentSkill | Surface::PiExtension),
                             );
                         let nav_moved = self.nav_moved;
                         surface_state
@@ -1422,65 +1443,6 @@ impl eframe::App for DotagentApp {
                             });
                     }
 
-                    // -- Flat surfaces ---------------------------------------
-                    for surface in [Surface::ClaudeHook, Surface::CodexRule] {
-                        let item_indices: Vec<usize> = self
-                            .entries
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, e)| {
-                                e.surface == surface
-                                    && (self.filter.is_empty()
-                                        || e.name
-                                            .to_lowercase()
-                                            .contains(&self.filter.to_lowercase()))
-                            })
-                            .map(|(i, _)| i)
-                            .collect();
-                        let header =
-                            format!("{} ({})", surface.label(), item_indices.len());
-                        let is_cursor_here = cursor_node
-                            .as_ref()
-                            .map_or(false, |n| n.is_surface(surface));
-
-                        let surface_state =
-                            egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ctx,
-                                surface_col_id(surface),
-                                true,
-                            );
-                        let nav_moved = self.nav_moved;
-                        surface_state
-                            .show_header(ui, |ui| {
-                                let resp = ui.label(egui::RichText::new(&header).strong());
-                                if is_cursor_here {
-                                    paint_cursor_bar(ui, &resp, cursor_color);
-                                    if nav_moved {
-                                        resp.scroll_to_me(Some(egui::Align::Center));
-                                    }
-                                }
-                            })
-                            .body(|ui| {
-                                let items_ref: Vec<(usize, &SkillEntry)> = item_indices
-                                    .iter()
-                                    .filter_map(|&i| {
-                                        self.entries.get(i).map(|e| (i, e))
-                                    })
-                                    .collect();
-                                Self::render_entry_list(
-                                    ui,
-                                    &items_ref,
-                                    self.selected_idx,
-                                    nav_cursor_entry,
-                                    self.nav_moved,
-                                    &self.theme,
-                                    &mut self.checked,
-                                    &mut new_selection,
-                                    &mut new_context_target,
-                                );
-                            });
-                    }
-
                     // Capture pointer position when context menu first opens
                     let had_context = self.context_target.is_some();
                     self.context_target = new_context_target;
@@ -1524,7 +1486,10 @@ impl eframe::App for DotagentApp {
 
                     // -- Line 1: Title | Dirty/Sync status --
                     ui.horizontal(|ui| {
-                        ui.heading(&entry_name);
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&entry_name).heading())
+                                .truncate(),
+                        );
                         if self.is_dirty() {
                             ui.label(
                                 egui::RichText::new(" ~")
@@ -1545,10 +1510,13 @@ impl eframe::App for DotagentApp {
 
                     // -- Line 2: Path --
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(entry_path.display().to_string())
-                                .small()
-                                .weak(),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(entry_path.display().to_string())
+                                    .small()
+                                    .weak(),
+                            )
+                            .truncate(),
                         );
                         if entry_group != "Unknown source" {
                             ui.label(
@@ -1658,7 +1626,7 @@ impl eframe::App for DotagentApp {
                     }
                 } else {
                     ui.centered_and_justified(|ui| {
-                        ui.label("Select a skill or hook to view");
+                        ui.label("Select a skill, hook, rule, or extension to view");
                     });
                 }
             });
@@ -1669,14 +1637,30 @@ impl eframe::App for DotagentApp {
 // Fonts
 // ---------------------------------------------------------------------------
 
+fn packaged_font_candidates(name: &str) -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            candidates.push(bin_dir.join("../share/dotagent/fonts").join(name));
+            candidates.push(bin_dir.join("../fonts").join(name));
+        }
+    }
+
+    candidates.push(std::path::PathBuf::from("fonts").join(name));
+    candidates
+}
+
+fn read_packaged_font(name: &str) -> Option<Vec<u8>> {
+    packaged_font_candidates(name)
+        .into_iter()
+        .find_map(|path| std::fs::read(path).ok())
+}
+
 fn load_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    let mono_path = "fonts/spline-sans-mono-latin-400-normal.ttf";
-    let sans_path = "fonts/spline-sans-latin-400-normal.ttf";
-    let mono_bold_path = "fonts/spline-sans-mono-latin-700-normal.ttf";
-
-    if let Ok(mono_data) = std::fs::read(mono_path) {
+    if let Some(mono_data) = read_packaged_font("spline-sans-mono-latin-400-normal.ttf") {
         fonts.font_data.insert(
             "SplineSansMono".to_owned(),
             egui::FontData::from_owned(mono_data).into(),
@@ -1688,7 +1672,9 @@ fn load_fonts(ctx: &egui::Context) {
             .insert(0, "SplineSansMono".to_owned());
     }
 
-    if let Ok(mono_bold_data) = std::fs::read(mono_bold_path) {
+    let has_mono_bold =
+        if let Some(mono_bold_data) = read_packaged_font("spline-sans-mono-latin-700-normal.ttf")
+    {
         fonts.font_data.insert(
             "SplineSansMono-Bold".to_owned(),
             egui::FontData::from_owned(mono_bold_data).into(),
@@ -1699,9 +1685,12 @@ fn load_fonts(ctx: &egui::Context) {
             .entry(egui::FontFamily::Name("MonoBold".into()))
             .or_default()
             .push("SplineSansMono-Bold".to_owned());
-    }
+        true
+    } else {
+        false
+    };
 
-    if let Ok(sans_data) = std::fs::read(sans_path) {
+    if let Some(sans_data) = read_packaged_font("spline-sans-latin-400-normal.ttf") {
         fonts.font_data.insert(
             "SplineSans".to_owned(),
             egui::FontData::from_owned(sans_data).into(),
@@ -1724,7 +1713,14 @@ fn load_fonts(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.text_styles.insert(
         TextStyle::Heading,
-        FontId::new(20.0, FontFamily::Name("MonoBold".into())),
+        FontId::new(
+            20.0,
+            if has_mono_bold {
+                FontFamily::Name("MonoBold".into())
+            } else {
+                FontFamily::Monospace
+            },
+        ),
     );
     style
         .text_styles

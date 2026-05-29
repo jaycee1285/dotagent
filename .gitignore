@@ -1,0 +1,12 @@
+/target/
+
+# Ignore markdown files by default, but keep README files.
+*.md
+!README.md
+!README.MD
+!**/README.md
+!**/README.MD
+
+# Ignore hidden directories.
+.*/
+**/.*/

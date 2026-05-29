@@ -8,8 +8,8 @@ mutates: []
 observes:
   - ~/.claude/skills
   - ~/.claude/settings.json
-  - ~/.codex/skills
-  - ~/.codex/rules
+  - ~/.agents/skills
+  - ~/.pi/agent/extensions
   - ~/repos/digtwin
 persists_to: []
 depends_on:
@@ -20,14 +20,15 @@ staleness_risks:
 entrypoints:
   - src/scanner/mod.rs
   - src/scanner/claude.rs
-  - src/scanner/codex.rs
+  - src/scanner/agents.rs
+  - src/scanner/pi.rs
   - src/scanner/digtwin.rs
 ---
 
 # Scanner Discovery
 
 ## Purpose
-Builds the combined `SkillEntry` list across Claude skills, Claude hooks, Codex skills, and Codex rules. It also derives provenance grouping metadata and computes the initial green/yellow/red sync status against the digtwin backup tree.
+Builds the combined `SkillEntry` list across Claude skills, Claude hooks, Agent skills, and Pi extensions. It also derives provenance grouping metadata and computes the initial green/yellow/red sync status against the digtwin backup tree.
 
 ## Scope of Touch
 Safe to edit when changing:
